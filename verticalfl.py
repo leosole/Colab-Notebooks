@@ -9,9 +9,6 @@ Original file is located at
 
 epochs = 5
 
-from google.colab import drive
-drive.mount('/content/drive')
-
 """# Example - Simple Vertically Partitioned Split Neural Network
 
 - <b>Alice</b>
@@ -88,22 +85,18 @@ class SplitNN:
         for opt in self.optimizers:
             opt.step()
 
-!pip install openmined.psi
-!pip install syft==0.2.9
-
+print('importing libs')
 import os
 # change to path to PyVertical in drive:
-os.chdir('/content/drive/MyDrive/LEO/UFRJ/IC/vertical/PyVertical')
 import sys
-sys.path.append('../')
+sys.path.append('./PyVertical')
+
+import syft as sy
 
 import torch
 from torchvision import datasets, transforms
 from torch import nn, optim
-from torchvision.datasets import MNIST
 from torchvision.transforms import ToTensor
-
-import syft as sy
 
 import pandas as pd
 import numpy as np
@@ -112,7 +105,7 @@ from src.dataloader import VerticalDataLoader
 from src.psi.util import Client, Server
 from src.utils import add_ids
 
-hook = sy.TorchHook(torch)
+#hook = sy.TorchHook(torch)
 
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
@@ -159,8 +152,10 @@ class FraudDataset(Dataset):
 
         self.ids = self.ids[sorted_idxs]
 
-os.chdir('/content/drive/MyDrive/Colab Notebooks/data')
-data = FraudDataset("creditcard.csv")
+print('loading dataset')
+#os.chdir('../data')
+os.chdir('./PyVertical')
+data = FraudDataset("data/creditcard.csv")
 # Create dataset
 # data = add_ids(raw_data)(".", download=True, transform=ToTensor())  # add_ids adds unique IDs to data points
 
@@ -169,6 +164,7 @@ dataloader = VerticalDataLoader(data, batch_size=128) # partition_dataset uses b
 
 """## Implement PSI and order the datasets accordingly"""
 
+print('implementing psi')
 # Compute private set intersection
 client_items = dataloader.dataloader1.dataset.get_ids()
 server_items = dataloader.dataloader2.dataset.get_ids()
@@ -187,6 +183,7 @@ torch.manual_seed(0)
 
 # Define our model segments
 
+print('defining model')
 input_size = 29
 hidden_sizes = [128, 128]
 output_size = 1
@@ -208,8 +205,16 @@ optimizers = [
 ]
 
 # create some workers
-alice = sy.VirtualWorker(hook, id="alice")
-bob = sy.VirtualWorker(hook, id="bob")
+
+print('creating workers')
+#alice = sy.VirtualWorker(hook, id="alice")
+#bob = sy.VirtualWorker(hook, id="bob")
+bob_vm = sy.VirtualMachine(name='bob')
+bob = bob_vm.get_root_client()
+
+alice_vm = sy.VirtualMachine(name='alice')
+alice = alice_vm.get_root_client()
+
 
 # Send Model Segments to model locations
 model_locations = [alice, bob]
@@ -242,12 +247,13 @@ def train(x, target, splitNN):
     
     return loss, pred
 
+print('starting training')
 for i in range(epochs):
     running_loss = 0
     correct_preds = 0
     total_preds = 0
     tp, fp, tn, fn = 0, 0, 0, 0
-
+    j = 0
     for (data, label) in zip(dataloader.dataloader1.dataset.data, dataloader.dataloader2.dataset.targets):
         # Train a model
         data = data.send(models[0].location)
@@ -264,14 +270,10 @@ for i in range(epochs):
         fp += (pred and not lab)
         tn += (not pred and not lab)
         fn += (not pred and lab)
-        print(f'epoch: {i} | tp: {tp}, tn: {tn}, fp: {fp}, fn: {fn}', end='\r')
+        percent = j / dataloader.dataloader2.dataset.targets.shape[0] * 100
+        print(f'epoch {i}: {percent}% | tp: {tp}, tn: {tn}, fp: {fp}, fn: {fn}', end='\r')
         running_loss += loss.get()
         total_preds += 1
     f1_score = tp / (tp + (fp + fn)/2)
-    print(f"Epoch {i} - Training loss: {running_loss/len(dataloader):.3f} - F1 Score: {f1_score:.3f}")
+    print(f"epoch {i} - training loss: {running_loss/len(dataloader):.3f} - f1 score: {f1_score:.3f}")
 
-print(f'tp: {tp}, tn: {tn}, fp: {fp}, fn: {fn}')
-
-# f1_score = tp / (tp + (fp + fn)/2)
-f1_score = 174 / (174 + (40 + 133)/2)
-f1_score
