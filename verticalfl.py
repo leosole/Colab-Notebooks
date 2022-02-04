@@ -26,7 +26,33 @@ Authors:
 - Robert Sandmann · GitHub: [@rsandmann](https://github.com/rsandmann)
 
 """
+print('importing libs')
+import os
+# change to path to PyVertical in drive:
+import sys
+sys.path.append('./PyVertical')
 
+import syft as sy
+
+import torch
+from torchvision import datasets, transforms
+from torch import nn, optim
+from torchvision.transforms import ToTensor
+
+import pandas as pd
+import numpy as np
+
+from src.dataloader import VerticalDataLoader
+from src.psi.util import Client, Server
+from src.utils import add_ids
+
+#hook = sy.TorchHook(torch)
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset
+from uuid import uuid4
+from typing import List
 class SplitNN:
     def __init__(self, models, optimizers):
         self.models = models
@@ -84,46 +110,14 @@ class SplitNN:
     def step(self):
         for opt in self.optimizers:
             opt.step()
-
-print('importing libs')
-import os
-# change to path to PyVertical in drive:
-import sys
-sys.path.append('./PyVertical')
-
-import syft as sy
-
-import torch
-from torchvision import datasets, transforms
-from torch import nn, optim
-from torchvision.transforms import ToTensor
-
-import pandas as pd
-import numpy as np
-
-from src.dataloader import VerticalDataLoader
-from src.psi.util import Client, Server
-from src.utils import add_ids
-
-#hook = sy.TorchHook(torch)
-
-from sklearn.preprocessing import StandardScaler
-from torch.utils.data import Dataset
-from uuid import uuid4
-from typing import List
-
 class FraudDataset(Dataset):
-  def __init__(self, file_name):
-    file_out = pd.read_csv(file_name)
-    x = file_out.iloc[1:284807, 1:30].values
-    y = file_out.iloc[1:284807, 30].values
-    # x = file_out.iloc[1:28480, 1:30].values
-    # y = file_out.iloc[1:28480, 30].values
+  def __init__(self, file_out, sc):
+    x = file_out.iloc[:, 1:30].values
+    y = file_out.iloc[:, 30].values
 
-    sc = StandardScaler()
-    x_train = sc.fit_transform(x)
+    x_transform = sc.transform(x)
 
-    self.data = torch.tensor(x_train, dtype=torch.float32)
+    self.data = torch.tensor(x_transform, dtype=torch.float32)
     self.targets = torch.tensor(y, dtype=torch.float32)
 
     self.ids = np.array([uuid4() for _ in range(len(file_out))])
@@ -155,9 +149,14 @@ class FraudDataset(Dataset):
 print('loading dataset')
 #os.chdir('../data')
 os.chdir('./PyVertical')
-data = FraudDataset("data/creditcard.csv")
-# Create dataset
-# data = add_ids(raw_data)(".", download=True, transform=ToTensor())  # add_ids adds unique IDs to data points
+file_out = pd.read_csv("creditcard.csv")
+x_train = file_out.iloc[1:200000, :]#284807
+x_sc = x_train.iloc[:,1:30].values
+sc = StandardScaler()
+sc.fit(x_sc)
+x_test = file_out.iloc[200000:284807, :]
+dataset = FraudDataset(x_train, sc)
+testset = FraudDataset(x_test, sc)
 
 # Batch data
 dataloader = VerticalDataLoader(data, batch_size=128) # partition_dataset uses by default "remove_data=True, keep_order=False"
@@ -271,9 +270,44 @@ for i in range(epochs):
         tn += (not pred and not lab)
         fn += (not pred and lab)
         percent = j / dataloader.dataloader2.dataset.targets.shape[0] * 100
-        print(f'epoch {i}: {percent}% | tp: {tp}, tn: {tn}, fp: {fp}, fn: {fn}', end='\r')
+        j += 1
+        print(f'\r epoch {i}: {percent:.1f}% | tp: {tp}, tn: {tn}, fp: {fp}, fn: {fn}', end='')
         running_loss += loss.get()
-        total_preds += 1
     f1_score = tp / (tp + (fp + fn)/2)
-    print(f"epoch {i} - training loss: {running_loss/len(dataloader):.3f} - f1 score: {f1_score:.3f}")
+    print(f" | training loss: {running_loss/len(dataloader):.3f} | f1 score: {f1_score:.3f}")
 
+from torch.utils.data import DataLoader
+
+testloaderC = DataLoader(testset, batch_size=64, shuffle=True)
+
+testloader = VerticalDataLoader(testset, batch_size=128)
+client_items = testloader.dataloader1.dataset.get_ids()
+server_items = testloader.dataloader2.dataset.get_ids()
+
+client = Client(client_items)
+server = Server(server_items)
+
+setup, response = server.process_request(client.request, len(client_items))
+intersection = client.compute_intersection(setup, response)
+
+# Order data
+testloader.drop_non_intersecting(intersection)
+testloader.sort_by_ids()
+
+tp, fp, tn, fn = 0, 0, 0, 0
+for sample, label in zip(testloader.dataloader1.dataset.data, testloader.dataloader2.dataset.targets):
+    sample = sample.send(models[0].location)
+    label = label.send(models[-1].location)
+    label = label.view(1)
+    splitNN.zero_grads()
+    pred = splitNN.forward(sample)
+    pred = round(float(pred.get()[0]))
+    lab = float(label.get()[0])
+    # Collect statistics
+    tp += (pred and lab)
+    fp += (pred and not lab)
+    tn += (not pred and not lab)
+    fn += (not pred and lab)
+    print(f'\r tp: {tp}, fp: {fp}, tn: {tn}, fn: {fn}', end='')
+f1_score = tp / (tp + (fp + fn)/2)
+print(f'\n test f1 score: {f1_score:.3f}')
