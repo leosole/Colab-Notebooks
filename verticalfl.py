@@ -149,7 +149,7 @@ class FraudDataset(Dataset):
 print('loading dataset')
 #os.chdir('../data')
 os.chdir('./PyVertical')
-file_out = pd.read_csv("creditcard.csv")
+file_out = pd.read_csv("data/creditcard.csv")
 x_train = file_out.iloc[1:200000, :]#284807
 x_sc = x_train.iloc[:,1:30].values
 sc = StandardScaler()
@@ -159,7 +159,7 @@ dataset = FraudDataset(x_train, sc)
 testset = FraudDataset(x_test, sc)
 
 # Batch data
-dataloader = VerticalDataLoader(data, batch_size=128) # partition_dataset uses by default "remove_data=True, keep_order=False"
+dataloader = VerticalDataLoader(dataset, batch_size=128) # partition_dataset uses by default "remove_data=True, keep_order=False"
 
 """## Implement PSI and order the datasets accordingly"""
 
